@@ -1,3 +1,4 @@
+# run.py
 from buffer import MultiAgentReplayBuffer
 from maddpg import MADDPG
 import torch
@@ -58,7 +59,7 @@ def evaluate(agents, env, ep, step, n_eval=5):
 
 
 def run():
-    env = MultiUAVEnv()   # 初始化多无人机与 IoT 场景
+    env = MultiUAVEnv()  # 初始化多无人机与 IoT 场景
     n_agents = len(env.uavs)  # 无人机数量
     uav_ids = sorted(env.uavs.keys())
     actor_dims = []  # 存储每个智能体的观察空间的维度（从环境中获取）
@@ -70,16 +71,22 @@ def run():
     critic_dims = sum(actor_dims) + sum(n_actions)
 
     # 创建 MADDPG 实例
+
+    # 减小学习率
     maddpg_agents = MADDPG(actor_dims, critic_dims, n_agents, n_actions,
-                           env=env, gamma=0.95, alpha=1e-4, beta=1e-3)
+                           env=env,
+                           gamma=0.99,  # 增大折扣因子
+                           alpha=5e-5,  # 减小actor学习率
+                           beta=5e-4)  # 减小critic学习率
+
     critic_dims = sum(actor_dims)
 
     # 创建一个回放池（Replay Buffer），用于存储智能体的经验并供训练使用
-    memory = MultiAgentReplayBuffer(100_000, critic_dims, actor_dims,
-                                    n_actions, n_agents, batch_size=1024)
+    memory = MultiAgentReplayBuffer(500_000, critic_dims, actor_dims,
+                                    n_actions, n_agents, batch_size=256)
 
     EVAL_INTERVAL = 10  # 每隔 10 步进行评估
-    MAX_STEPS = 3000  # 最大步骤数
+    MAX_STEPS = 5000  # 最大步骤数
 
     total_steps = 0
     episode = 0
@@ -138,7 +145,5 @@ def run():
     np.save('../data/my_maddpg_steps.npy', np.array(eval_steps))
 
 
-
 if __name__ == '__main__':
     run()
-

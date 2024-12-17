@@ -1,3 +1,4 @@
+# maddpg.py
 from agent import Agent
 import numpy as np
 
@@ -51,10 +52,26 @@ class MADDPG:
         return actions
 
     def learn(self, memory):
-        '''
-        用于进行智能体的训练，增加协作和调试信息
-        '''
-        for agent_idx, agent in enumerate(self.agents):
-            # 为每个智能体提供其他智能体的动作信息
-            agent.learn(memory, self.agents)
+        if not memory.ready():
+            return
 
+        # 获取所有智能体的actor_loss和critic_loss
+        actor_losses = []
+        critic_losses = []
+
+        # 添加梯度裁剪
+        max_grad_norm = 0.5
+
+        for agent_idx, agent in enumerate(self.agents):
+            actor_loss, critic_loss = agent.learn(memory, self.agents)
+
+            # 梯度裁剪
+            for param in agent.actor.parameters():
+                torch.nn.utils.clip_grad_norm_(param, max_grad_norm)
+            for param in agent.critic.parameters():
+                torch.nn.utils.clip_grad_norm_(param, max_grad_norm)
+
+            actor_losses.append(actor_loss)
+            critic_losses.append(critic_loss)
+
+        return np.mean(actor_losses), np.mean(critic_losses)

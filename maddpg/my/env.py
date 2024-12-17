@@ -577,47 +577,39 @@ class MultiUAVEnv:
         infos = {uav_id: {} for uav_id in self.uavs.keys()}
 
         return observations, rewards, dones, truncs, infos
+
     def compute_reward(self, uav):
-        # 权重设置
-        w_delay = 1.0  # 延迟满意度的权重
-        w_energy = 0.0001  # 能耗的权重
-        penalty_weight = 10.0  # 资源分配总和超出的惩罚权重
+        # 调整权重
+        w_delay = 0.6  # 降低延迟权重
+        w_energy = 0.2  # 增加能耗权重
+        w_coverage = 0.2  # 新增覆盖率权重
+        penalty_weight = 0.5
 
-        # 计算总延迟满意度
-        total_delay_satisfaction = 0.0
+        # 延迟满意度计算
+        delay_satisfaction = 0.0
         for device in uav.connected_devices:
-            delay_satisfaction = (device.max_delay - device.total_delay) / device.max_delay
-            delay_satisfaction = max(delay_satisfaction, 0.0)
-            total_delay_satisfaction += delay_satisfaction
+            if device.total_delay <= device.max_delay:
+                delay_satisfaction += 1.0
+            else:
+                delay_satisfaction += max(0, 1 - (device.total_delay - device.max_delay) / device.max_delay)
 
-        # 计算平均延迟满意度
         if len(uav.connected_devices) > 0:
-            average_delay_satisfaction = total_delay_satisfaction / len(uav.connected_devices)
-        else:
-            average_delay_satisfaction = 0.0
+            delay_satisfaction /= len(uav.connected_devices)
 
-        # 计算能耗惩罚
-        energy_penalty = w_energy * uav.energy_consumed
+        # 能耗效率
+        energy_efficiency = max(0, 1 - uav.energy_consumed / UAV_BATTERY_ENERGY)
 
-        # 计算 allocations 总和
+        # 设备覆盖率
+        coverage_devices = [d for d in self.devices if uav in d.covering_uavs]
+        coverage_rate = len(coverage_devices) / len(self.devices)
         sum_alloc = sum(uav.compute_allocation.values())
-
-        # 计算资源分配超额惩罚
         if sum_alloc > 1.0:
             penalty = penalty_weight * (sum_alloc - 1.0)
         else:
             penalty = 0.0
 
         # 综合奖励
-        reward = (w_delay * average_delay_satisfaction) - energy_penalty - penalty
-
-        # 确保奖励为非负
-        reward = max(reward, 0.0)
-
-        # 打印详细的奖励组成部分（用于调试）
-        # print(f"[DEBUG] UAV {uav.uav_id} - Avg Delay Satisfaction: {average_delay_satisfaction:.4f}, "
-        #       f"Energy Consumed: {uav.energy_consumed:.4f}, Sum Alloc: {sum_alloc:.4f}, "
-        #       f"Penalty: {penalty:.4f}, Reward: {reward:.4f}")
+        reward = w_delay * delay_satisfaction + w_energy * energy_efficiency + w_coverage * coverage_rate-penalty
 
         return reward
 

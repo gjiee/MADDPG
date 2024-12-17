@@ -12,6 +12,7 @@ import matplotlib.pyplot as plt
 plt.rcParams['font.sans-serif'] = ['SimHei']
 plt.rcParams['axes.unicode_minus'] = False
 
+
 class IoTDevice:
     def __init__(self, device_id, position, task_type):
         self.device_id = device_id
@@ -179,9 +180,9 @@ class IoTDevice:
 
         # 总时延是 UAV 部分时延和本地剩余时延的最大值
         self.total_delay = max(uav_computation_delay, remaining_local_computation_delay)
-        # print(f"self.offload_fraction:{self.offload_fraction}")
-        # print(f"uav_computation_delay:{uav_computation_delay},remaining_local_computation_delay:{remaining_local_computation_delay}")
-        # print(f"self.total_delay:{self.total_delay}")
+        # print(f"self.offload_fraction: {self.offload_fraction}")
+        # print(f"uav_computation_delay: {uav_computation_delay}, remaining_local_computation_delay: {remaining_local_computation_delay}")
+        # print(f"self.total_delay: {self.total_delay}")
 
         # 判断任务是否完成
         self.is_task_completed = self.total_delay <= self.max_delay
@@ -224,6 +225,7 @@ class IoTDevice:
             cmap = plt.get_cmap('plasma')
             norm = plt.Normalize(min_height, max_height)
             fig, ax = plt.subplots()
+
             for idx, uav in enumerate(uavs):
                 plt.scatter(uav.position[0], uav.position[1],
                             c=[cmap(norm(uav.position[2]))],
@@ -239,7 +241,7 @@ class IoTDevice:
             # 添加颜色条以表示高度
             sm = plt.cm.ScalarMappable(cmap=cmap, norm=norm)
             sm.set_array([])
-            cbar = plt.colorbar(sm, ax=ax,shrink=0.6)
+            cbar = plt.colorbar(sm, ax=ax, shrink=0.6)
             cbar.set_label('UAV 高度 (m)')
 
         if title is not None:
@@ -254,11 +256,13 @@ class IoTDevice:
         plt.grid(True)
         plt.show()
 
+
 class UAV:
     def __init__(self, uav_id, position):
         """
         初始化 UAV 对象，包括 UAV ID、三维位置等参数。
         """
+        self.energy_consumed = 0.0
         self.uav_id = uav_id
         self.position = np.array(position)  # UAV 的三维位置 (x, y, z)
         self.coverage_angle = UAV_COVERAGE_ANGLE  # 覆盖角度，单位：度
@@ -289,6 +293,7 @@ class UAV:
         self.compute_allocation = {}
         self.bandwidth_allocation = {}
         self.connected_devices = []
+        self.energy_consumed = 0.0  # 重置能耗
 
         # 重置本step关联请求
         self.candidate_associations = {}
@@ -315,7 +320,6 @@ class UAV:
                 total_energy += energy
 
         self.energy_consumed = total_energy  # 更新能耗属性
-        # print(f"self.energy_consumed:{self.energy_consumed}")
         return total_energy
 
     def apply_action(self, action, coverage_devices):
@@ -324,8 +328,8 @@ class UAV:
         """
         num_cov = len(coverage_devices)
         associations = action[0:num_cov]
-        offloads = action[num_cov:2*num_cov]
-        allocs = action[2*num_cov:3*num_cov]
+        offloads = action[num_cov:2 * num_cov]
+        allocs = action[2 * num_cov:3 * num_cov]
 
         # Reset previous candidate associations and allocations
         self.candidate_associations = {}
@@ -337,7 +341,7 @@ class UAV:
             offload_fraction = offloads[i]
             compute_alloc = allocs[i]
 
-            if association >= 0.5:  # Using a threshold to decide on association (binary decision)
+            if association == 1.0 and offload_fraction > 0.0:  # Using a threshold to decide on association (binary decision)
                 self.candidate_associations[device.device_id] = True
                 self.candidate_offload_fraction[device.device_id] = offload_fraction
                 self.candidate_compute_allocation[device.device_id] = compute_alloc
@@ -377,6 +381,7 @@ class UAV:
         devices_info = np.array(devices_info, dtype=np.float32)
 
         return np.concatenate([uav_info, devices_info])
+
 
 class MultiUAVEnv:
     def __init__(self, K=K, min_threshold=CMIN, max_threshold=CMAX, alpha=0.5, beta=0.5, max_iterations=100):
@@ -474,7 +479,8 @@ class MultiUAVEnv:
                 continue
 
             # 找出assoc=1的UAV
-            candidate_uavs = [uav for uav in device.covering_uavs if uav.candidate_associations.get(device.device_id, False)]
+            candidate_uavs = [uav for uav in device.covering_uavs if
+                              uav.candidate_associations.get(device.device_id, False)]
             if not candidate_uavs:
                 # 无候选 => local
                 device.connected_uav = None
@@ -590,39 +596,42 @@ class MultiUAVEnv:
         return observations, rewards, dones, truncs, infos
 
     def compute_reward(self, uav):
-        # Define weights for delay satisfaction and energy consumption
-        # These weights should be tuned based on the typical ranges of the components
-        w_delay = 1.0  # Weight for delay satisfaction
-        w_energy = 0.0001  # Weight for energy consumption
+        # 定义延迟满意度和能耗的权重
+        w_delay = 1.0  # 延迟满意度的权重
+        w_energy = 0.0001  # 能耗的权重，根据实际情况可能需要调整
 
-        # Compute total delay satisfaction
+        # 计算所有连接设备的总延迟满意度
         total_delay_satisfaction = 0.0
         for device in uav.connected_devices:
             delay_satisfaction = (device.max_delay - device.total_delay) / device.max_delay
-            delay_satisfaction = max(delay_satisfaction, 0)
+            delay_satisfaction = max(delay_satisfaction, 0.0)
             total_delay_satisfaction += delay_satisfaction
 
-        # Normalize delay satisfaction by number of devices to prevent scaling issues
+        # 计算平均延迟满意度
         if len(uav.connected_devices) > 0:
             average_delay_satisfaction = total_delay_satisfaction / len(uav.connected_devices)
         else:
             average_delay_satisfaction = 0.0
 
-        # Compute energy penalty
+        # 计算能耗惩罚
         energy_penalty = w_energy * uav.energy_consumed
 
-        # Combined reward
+        # 组合奖励
         reward = (w_delay * average_delay_satisfaction) - energy_penalty
 
-        # Optionally, you can shift the reward to ensure it's non-negative
-        reward_shift = 1.0  # Shift all rewards by this amount to make them positive
-        reward += reward_shift
+        # 确保奖励不为负
+        reward = max(reward, 0.0)
+
+        # # 打印详细的奖励组成部分（用于调试）
+        # print(f"[DEBUG] UAV {uav.uav_id} - Avg Delay Satisfaction: {average_delay_satisfaction:.4f}, "
+        #       f"Energy Consumed: {uav.energy_consumed:.4f}, Reward: {reward:.4f}")
 
         return reward
 
     def render(self, title=None):
         uav_objects = list(self.uavs.values())
         IoTDevice.plot_iot_devices(self.devices, uavs=uav_objects, title=title)
+
 
 def calculate_transmission_rate(device_position, uav_position, bandwidth_per_user):
     """

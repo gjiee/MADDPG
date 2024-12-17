@@ -45,6 +45,8 @@ class MADDPG:
         for idx, agent in enumerate(self.agents):  # 用索引而不是直接解包 raw_obs
             observation = raw_obs[idx]  # 获取对应智能体的观测
             action = agent.choose_action(observation, evaluate)  # 调用 Agent.choose_action
+            action = np.clip(action, 0.0, 1.0)
+            actions[agent_id] = action
             actions[f'uav_{idx}'] = action  # 用智能体标识符作为键
         return actions
 

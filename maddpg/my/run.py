@@ -86,8 +86,7 @@ def run():
                                     n_actions, n_agents, batch_size=256)
 
     EVAL_INTERVAL = 10  # 每隔 10 步进行评估
-    MAX_STEPS = 10000  # 最大步骤数
-
+    MAX_STEPS = 5000  # 最大步骤数
     total_steps = 0
     episode = 0
     eval_scores = []

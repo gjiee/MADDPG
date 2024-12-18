@@ -12,6 +12,7 @@ import matplotlib.pyplot as plt
 plt.rcParams['font.sans-serif'] = ['SimHei']
 plt.rcParams['axes.unicode_minus'] = False
 
+
 class IoTDevice:
     def __init__(self, device_id, position, task_type):
         self.device_id = device_id
@@ -57,9 +58,6 @@ class IoTDevice:
             self.max_delay = np.random.uniform(1, 2)
             self.priority = 5
         else:  # 'high'
-            # self.data_size = np.random.uniform(1e6, 2e6)
-            # self.cpu_cycles = np.random.uniform(800, 1000)
-            # self.max_delay = np.random.uniform(1.0, 1.5)
             self.data_size = np.random.uniform(2e6, 3e6)
             self.cpu_cycles = np.random.uniform(1000, 1200)
             self.max_delay = np.random.uniform(1, 2)
@@ -182,9 +180,9 @@ class IoTDevice:
 
         # 总时延是 UAV 部分时延和本地剩余时延的最大值
         self.total_delay = max(uav_computation_delay, remaining_local_computation_delay)
-        print(f"self.offload_fraction:{self.offload_fraction}")
-        print(f"uav_computation_delay:{uav_computation_delay},remaining_local_computation_delay:{remaining_local_computation_delay}")
-        print(f"self.total_delay:{self.total_delay}")
+        # print(f"self.offload_fraction: {self.offload_fraction}")
+        # print(f"uav_computation_delay: {uav_computation_delay}, remaining_local_computation_delay: {remaining_local_computation_delay}")
+        # print(f"self.total_delay: {self.total_delay}")
 
         # 判断任务是否完成
         self.is_task_completed = self.total_delay <= self.max_delay
@@ -226,6 +224,7 @@ class IoTDevice:
             # 使用颜色渐变表示高度
             cmap = plt.get_cmap('plasma')
             norm = plt.Normalize(min_height, max_height)
+            fig, ax = plt.subplots()
 
             for idx, uav in enumerate(uavs):
                 plt.scatter(uav.position[0], uav.position[1],
@@ -242,7 +241,7 @@ class IoTDevice:
             # 添加颜色条以表示高度
             sm = plt.cm.ScalarMappable(cmap=cmap, norm=norm)
             sm.set_array([])
-            cbar = plt.colorbar(sm, shrink=0.6)
+            cbar = plt.colorbar(sm, ax=ax, shrink=0.6)
             cbar.set_label('UAV 高度 (m)')
 
         if title is not None:
@@ -257,11 +256,13 @@ class IoTDevice:
         plt.grid(True)
         plt.show()
 
+
 class UAV:
     def __init__(self, uav_id, position):
         """
         初始化 UAV 对象，包括 UAV ID、三维位置等参数。
         """
+        self.energy_consumed = 0.0
         self.uav_id = uav_id
         self.position = np.array(position)  # UAV 的三维位置 (x, y, z)
         self.coverage_angle = UAV_COVERAGE_ANGLE  # 覆盖角度，单位：度
@@ -292,6 +293,7 @@ class UAV:
         self.compute_allocation = {}
         self.bandwidth_allocation = {}
         self.connected_devices = []
+        self.energy_consumed = 0.0  # 重置能耗
 
         # 重置本step关联请求
         self.candidate_associations = {}
@@ -318,7 +320,6 @@ class UAV:
                 total_energy += energy
 
         self.energy_consumed = total_energy  # 更新能耗属性
-        # print(f"self.energy_consumed:{self.energy_consumed}")
         return total_energy
 
     def apply_action(self, action, coverage_devices):
@@ -327,13 +328,8 @@ class UAV:
         """
         num_cov = len(coverage_devices)
         associations = action[0:num_cov]
-        offloads = action[num_cov:2*num_cov]
-        allocs = action[2*num_cov:3*num_cov]
-
-        # # 打印动作信息
-        # print(f"[DEBUG] UAV {self.uav_id} associations: {associations}")
-        # print(f"[DEBUG] UAV {self.uav_id} offloads: {offloads}")
-        # print(f"[DEBUG] UAV {self.uav_id} allocs: {allocs}")
+        offloads = action[num_cov:2 * num_cov]
+        allocs = action[2 * num_cov:3 * num_cov]
 
         # Reset previous candidate associations and allocations
         self.candidate_associations = {}
@@ -345,12 +341,16 @@ class UAV:
             offload_fraction = offloads[i]
             compute_alloc = allocs[i]
 
-            if association == 1.0:
+            if association == 1.0 and offload_fraction > 0.0:  # Using a threshold to decide on association (binary decision)
                 self.candidate_associations[device.device_id] = True
                 self.candidate_offload_fraction[device.device_id] = offload_fraction
+
+                # 确保 compute_alloc 在 [0,1] 之间
+                compute_alloc = np.clip(compute_alloc, 0.0, 1.0)
+
                 self.candidate_compute_allocation[device.device_id] = compute_alloc
 
-                # Set device's offload_fraction
+                # 设置设备的卸载比例
                 device.offload_fraction = offload_fraction
             else:
                 self.candidate_associations[device.device_id] = False
@@ -385,6 +385,7 @@ class UAV:
         devices_info = np.array(devices_info, dtype=np.float32)
 
         return np.concatenate([uav_info, devices_info])
+
 
 class MultiUAVEnv:
     def __init__(self, K=K, min_threshold=CMIN, max_threshold=CMAX, alpha=0.5, beta=0.5, max_iterations=100):
@@ -431,6 +432,7 @@ class MultiUAVEnv:
                 shape=(obs_dim,),
                 dtype=np.float32
             )
+            # Adjust action space to accommodate binary association and bounded continuous values
             self.action_spaces[uav_id] = spaces.Box(
                 low=0.0, high=1.0,
                 shape=(action_dim,),
@@ -466,10 +468,7 @@ class MultiUAVEnv:
             device.is_within_coverage = bool(device.covering_uavs)
 
     def resolve_associations(self):
-        """
-        最终分配：每个device选1个UAV(最小时延), UAV内部对alloc做再次归一化以确保总和<=1
-        """
-        # 先清空connected_devices
+        # 清空所有 UAV 的连接设备和资源分配
         for uav in self.uavs.values():
             uav.connected_devices = []
             uav.bandwidth_allocation = {}
@@ -480,27 +479,26 @@ class MultiUAVEnv:
             if device.is_task_completed:
                 continue
 
-            # 找出assoc=1的UAV
+            # 获取候选 UAV
             candidate_uavs = [uav for uav in device.covering_uavs if uav.candidate_associations.get(device.device_id, False)]
             if not candidate_uavs:
-                # 无候选 => local
+                # 无候选 UAV，任务在本地处理
                 device.connected_uav = None
                 device.offload_fraction = 0.0
                 continue
 
+            # 选择最小时延的 UAV
             best_uav = None
             min_delay = float('inf')
             best_alloc = 0.0
             best_offload = 0.0
 
-            # 选时延最小的UAV
             for uav in candidate_uavs:
                 offload_fraction = uav.candidate_offload_fraction.get(device.device_id, 0.0)
                 compute_alloc = uav.candidate_compute_allocation.get(device.device_id, 0.0)
-                # 临时假设connected_devices + [device]
                 tmp_devs = uav.connected_devices + [device]
                 num_conn = len(tmp_devs)
-                bw = (uav.bandwidth / num_conn) if num_conn>0 else 0.0
+                bw = (uav.bandwidth / num_conn) if num_conn > 0 else 0.0
                 delay = device.calculate_total_delay(uav, compute_alloc, bw)
                 if delay < min_delay:
                     min_delay = delay
@@ -517,96 +515,107 @@ class MultiUAVEnv:
                 device.connected_uav = None
                 device.offload_fraction = 0.0
 
-        # 分配带宽(平均)
-        for uav_id,uav in self.uavs.items():
+        # 平均分配带宽
+        for uav_id, uav in self.uavs.items():
             num_devs = len(uav.connected_devices)
-            if num_devs>0:
-                avg_bw = uav.bandwidth/num_devs
+            if num_devs > 0:
+                avg_bw = uav.bandwidth / num_devs
                 for dev in uav.connected_devices:
                     uav.bandwidth_allocation[dev.device_id] = avg_bw
             else:
-                uav.bandwidth_allocation={}
-
-        # **对每个UAV再对compute_alloc做一次归一化**，防止sum>1
-        for uav_id, uav in self.uavs.items():
-            sum_alloc = sum(uav.compute_allocation.get(dev.device_id,0.0) for dev in uav.connected_devices)
-            if sum_alloc>1.0:
-                for dev in uav.connected_devices:
-                    old_alloc = uav.compute_allocation[dev.device_id]
-                    new_alloc = old_alloc/(sum_alloc+1e-9)
-                    uav.compute_allocation[dev.device_id] = new_alloc
+                uav.bandwidth_allocation = {}
 
     def step(self, actions):
         self._calculate_device_coverage()
 
-        # 1. UAV apply_action => candidate_associations
+        # 1. UAV 应用动作
         for uav_id, action in actions.items():
             uav = self.uavs[uav_id]
             coverage_devices = sorted([d for d in self.devices if uav in d.covering_uavs], key=lambda d: d.device_id)
             uav.apply_action(action, coverage_devices)
 
-        # 2. 冲突消解 resolve
+        # 2. 冲突消解（连接和资源分配）
         self.resolve_associations()
 
-        # 打印debug信息
-        for uav_id, uav in self.uavs.items():
-            num_conn = len(uav.connected_devices)
-            sum_alloc = sum(uav.compute_allocation.get(dev.device_id,0.0) for dev in uav.connected_devices)
-            print(f"[DEBUG] UAV {uav_id} 关联的 IoT 设备数量: {num_conn}")
-            print(f"[DEBUG] UAV {uav_id} 分配的计算资源比例总和: {sum_alloc:.2f}")
-
-        # 3. 最终计算时延
+        # 3. 计算最终时延
         for device in self.devices:
             if device.is_task_completed:
                 continue
             if device.connected_uav:
                 uav = device.connected_uav
-                comp_alloc = uav.compute_allocation.get(device.device_id,0.0)
-                bw_alloc = uav.bandwidth_allocation.get(device.device_id,0.0)
+                comp_alloc = uav.compute_allocation.get(device.device_id, 0.0)
+                bw_alloc = uav.bandwidth_allocation.get(device.device_id, 0.0)
                 device.calculate_total_delay(uav, comp_alloc, bw_alloc)
             else:
-                # local
+                # 本地计算
                 device.calculate_total_delay()
 
-        # 4. UAV能耗
-        uav_energies = {uav_id: uav.compute_energy_consumption() for uav_id,uav in self.uavs.items()}
+        # 4. 计算 UAV 能耗
+        for uav in self.uavs.values():
+            uav.compute_energy_consumption()
 
-        # 5. reward
-        max_eu = max(uav_energies.values()) if len(uav_energies)>0 else 0.0
-        rewards = {uav_id:self.compute_reward(uav,max_eu) for uav_id,uav in self.uavs.items()}
+        # 5. 计算奖励
+        rewards = {}
+        for uav_id, uav in self.uavs.items():
+            rewards[uav_id] = self.compute_reward(uav)
 
-        # 6. new obs
-        observations={}
-        for uav_id,uav in self.uavs.items():
-            coverage_devices = sorted([d for d in self.devices if uav in d.covering_uavs],key=lambda d: d.device_id)
+        # 6. 更新观察
+        observations = {}
+        for uav_id, uav in self.uavs.items():
+            coverage_devices = sorted([d for d in self.devices if uav in d.covering_uavs], key=lambda d: d.device_id)
             observations[uav_id] = uav.get_observation(coverage_devices)
 
-        self.time_step +=1
+        self.time_step += 1
 
+        # 判断是否结束
         all_tasks_done = all(d.is_task_completed for d in self.devices)
-        dones={uav_id:False for uav_id in self.uavs.keys()}
-        truncs={uav_id:False for uav_id in self.uavs.keys()}
-        if self.time_step>=MAX_TIME_STEPS or all_tasks_done:
-            dones={uav_id:True for uav_id in self.uavs.keys()}
-            truncs={uav_id:self.time_step>=MAX_TIME_STEPS for uav_id in self.uavs.keys()}
-        infos={uav_id:{} for uav_id in self.uavs.keys()}
+        dones = {uav_id: False for uav_id in self.uavs.keys()}
+        truncs = {uav_id: False for uav_id in self.uavs.keys()}
+        if self.time_step >= MAX_TIME_STEPS or all_tasks_done:
+            dones = {uav_id: True for uav_id in self.uavs.keys()}
+            truncs = {uav_id: self.time_step >= MAX_TIME_STEPS for uav_id in self.uavs.keys()}
+        infos = {uav_id: {} for uav_id in self.uavs.keys()}
 
-        return observations,rewards,dones,truncs,infos
+        return observations, rewards, dones, truncs, infos
 
-    def compute_reward(self, uav, max_eu):
-        w_energy=0.001
-        total_reward=0.0
+    def compute_reward(self, uav):
+        # 调整权重
+        w_delay = 0.6  # 降低延迟权重
+        w_energy = 0.2  # 增加能耗权重
+        w_coverage = 0.2  # 新增覆盖率权重
+        penalty_weight = 0.5
+
+        # 延迟满意度计算
+        delay_satisfaction = 0.0
         for device in uav.connected_devices:
-            delay_satisfaction = (device.max_delay - device.total_delay)/device.max_delay
-            delay_satisfaction = max(delay_satisfaction,0)
-            total_reward+= delay_satisfaction
-        total_reward -= (w_energy*max_eu)
-        return total_reward
+            if device.total_delay <= device.max_delay:
+                delay_satisfaction += 1.0
+            else:
+                delay_satisfaction += max(0, 1 - (device.total_delay - device.max_delay) / device.max_delay)
+
+        if len(uav.connected_devices) > 0:
+            delay_satisfaction /= len(uav.connected_devices)
+
+        # 能耗效率
+        energy_efficiency = max(0, 1 - uav.energy_consumed / UAV_BATTERY_ENERGY)
+
+        # 设备覆盖率
+        coverage_devices = [d for d in self.devices if uav in d.covering_uavs]
+        coverage_rate = len(coverage_devices) / len(self.devices)
+        sum_alloc = sum(uav.compute_allocation.values())
+        if sum_alloc > 1.0:
+            penalty = penalty_weight * (sum_alloc - 1.0)
+        else:
+            penalty = 0.0
+
+        # 综合奖励
+        reward = w_delay * delay_satisfaction + w_energy * energy_efficiency + w_coverage * coverage_rate-penalty
+
+        return reward
 
     def render(self, title=None):
         uav_objects = list(self.uavs.values())
         IoTDevice.plot_iot_devices(self.devices, uavs=uav_objects, title=title)
-
 
 
 def calculate_transmission_rate(device_position, uav_position, bandwidth_per_user):
